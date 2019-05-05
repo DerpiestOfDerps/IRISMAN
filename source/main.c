@@ -156,6 +156,8 @@ u32 snd_inited = 0;
 
 #include "console_id.h"
 
+#define SYS35_PAYLOAD    7 /* HENtai payload */
+
 bool use_cobra = false;
 bool use_mamba = false; // cobra app version
 bool is_mamba_v2 = false;
@@ -242,6 +244,8 @@ static const float box_width = (200 * 4) - 8;
 static const float box_height = (150 * 3) - 8;
 
 bool options_locked = false; // true when control parental is between 1 and 9, false for parental 0 (disabled)
+
+bool use_sc35 = false;
 
 int noBDVD = MODE_DISCLESS;
 
@@ -473,31 +477,31 @@ LV2_SYSCALL wm_sys_storage_ext_umount_discfile(void)
 
 static void do_umount_iso(void)
 {
-	unsigned int real_disctype, effective_disctype, iso_disctype;
+    unsigned int real_disctype, effective_disctype, iso_disctype;
 
-	cobra_get_disc_type(&real_disctype, &effective_disctype, &iso_disctype);
+    cobra_get_disc_type(&real_disctype, &effective_disctype, &iso_disctype);
 
-	// If there is an effective disc in the system, it must be ejected
-	if(effective_disctype != DISC_TYPE_NONE)
-	{
-		cobra_send_fake_disc_eject_event();
-		usleep(4000);
-	}
+    // If there is an effective disc in the system, it must be ejected
+    if(effective_disctype != DISC_TYPE_NONE)
+    {
+        cobra_send_fake_disc_eject_event();
+        usleep(4000);
+    }
 
-	if(iso_disctype != DISC_TYPE_NONE) cobra_umount_disc_image();
+    if(iso_disctype != DISC_TYPE_NONE) cobra_umount_disc_image();
 
-	// If there is a real disc in the system, issue an insert event
-	if(real_disctype != DISC_TYPE_NONE)
-	{
-		cobra_send_fake_disc_insert_event();
-		for(u8 m=0; m<22; m++)
-		{
-			usleep(4000);
+    // If there is a real disc in the system, issue an insert event
+    if(real_disctype != DISC_TYPE_NONE)
+    {
+        cobra_send_fake_disc_insert_event();
+        for(u8 m=0; m<22; m++)
+        {
+            usleep(4000);
 
-			if(file_exists("/dev_bdvd")) break;
-		}
-		cobra_disc_auth();
-	}
+            if(file_exists("/dev_bdvd")) break;
+        }
+        cobra_disc_auth();
+    }
 }
 
 LV2_SYSCALL sys_storage_ext_fake_storage_event(uint64_t event, uint64_t param, uint64_t device)
@@ -1709,12 +1713,16 @@ int sys_fs_umount(char const* devicePath)
     return_to_user_prog(int);
 }
 
+u64 lv1peek(u64 addr)
+{
+    lv2syscall1(8, (u64) addr);
+    return_to_user_prog(u64);
+}
 
 u64 lv2peek(u64 addr)
 {
     lv2syscall1(6, (u64) addr);
     return_to_user_prog(u64);
-
 }
 
 u64 lv2poke(u64 addr, u64 value)
@@ -2020,10 +2028,10 @@ void fun_exit()
     if(snd_inited & INITED_SOUNDLIB)
         SND_End();
 
-	if(snd_inited & INITED_CALLBACK)
+    if(snd_inited & INITED_CALLBACK)
         sysUtilUnregisterCallback(SYSUTIL_EVENT_SLOT0);
 
-	if(snd_inited & INITED_AUDIOPLAYER)
+    if(snd_inited & INITED_AUDIOPLAYER)
         StopAudio();
 
     if(inited & INITED_SPU)
@@ -3397,7 +3405,7 @@ s32 main(s32 argc, const char* argv[])
 
     u32 entry = 0;
     u32 segmentcount = 0;
-    sysSpuSegment * segments;
+    sysSpuSegment * segments; 
 
     if(lv2peek(0x80000000000004E8ULL)) syscall_40(1, 0); // disables PS3 Disc-less
 
@@ -3964,6 +3972,19 @@ s32 main(s32 argc, const char* argv[])
 
     if(is_cobra_based()) use_cobra = true;
 
+    if(lv1peek(0x1773ULL)==0x1773ULL)
+    {
+            {lv2syscall2(35, (u64)(char*)"/app_home", (u64)NULL);}
+
+            {lv2syscall2(35, (u64)(char*)"/dev_bdvd", (u64)NULL);}
+            {lv2syscall2(35, (u64)(char*)"//dev_bdvd", (u64)NULL);}
+            {lv2syscall2(35, (u64)(char*)"/dev_usb000", (u64)NULL);}
+
+            unsupported_cfw = use_sc35 = true;
+            payload_mode = SYS35_PAYLOAD; // HENtai payload
+    }
+
+
     //sprintf(temp_buffer + 0x1000, "firmware: %xex payload %i", firmware, payload_mode);
 
 
@@ -3974,6 +3995,8 @@ s32 main(s32 argc, const char* argv[])
     read_settings();
 
     ///////////////////////////
+    *payload_str = 0;
+    if(use_sc35) goto payload_hentai;
 
     switch(firmware)
     {
@@ -4682,7 +4705,7 @@ s32 main(s32 argc, const char* argv[])
         default:
             tiny3d_Init(1024*1024);
             ioPadInit(7);
-            DrawDialogOK("ERROR: Unsupported firmware or the syscalls are disabled!\n\nSome functions will be limited.");
+            //DrawDialogOK("ERROR: Unsupported firmware or the syscalls are disabled!\n\nSome functions will be limited.");
             unsupported_cfw = true;
             break;
     }
@@ -4695,13 +4718,14 @@ s32 main(s32 argc, const char* argv[])
 
     usleep(250000);
 
+
     if(payload_mode >= ZERO_PAYLOAD && sys8_disable_all == 0)
     {
         int test = 0x100;
 
         uint16_t mamba_version = 0;
         if(use_cobra) sys8_mamba_version(&mamba_version);
-        if(use_mamba) is_mamba_v2 = (mamba_version != 0x0730);
+        if(use_mamba) is_mamba_v2 = (mamba_version < 0x0801);
 
         //check syscall8 status
         test = sys8_enable(0ULL);
@@ -4735,8 +4759,19 @@ s32 main(s32 argc, const char* argv[])
 
         }
         else
-        {       sys8_disable_all = 1;
-                sprintf(payload_str, "payload-sk1e - new syscall%i Err?! v(%i)", (u16)SYSCALL_SK1E, test);
+        {
+                //sprintf(payload_str, "payload-sk1e - new syscall%i Err?! v(%i)", (u16)SYSCALL_SK1E, test);
+payload_hentai:
+                //sys8_disable_all = 1;
+
+                //if(lv1peek(0x1773ULL)==0x1773ULL)
+                {
+                    unsupported_cfw = false, use_sc35 = true;
+                    sprintf(payload_str, "payload-PS3HEN");
+                    use_cobra = use_mamba = true; is_mamba_v2 = true;
+                }
+				//else if(*payload_str == 0)
+				//	sprintf(payload_str, "payload-unknown");
         }
     }
 
@@ -4746,6 +4781,7 @@ s32 main(s32 argc, const char* argv[])
     ioPadInit(7);
     usleep(250000);
 
+/*
     if(sys8_disable_all != 0 && !unsupported_cfw)
     {
          if(DrawDialogYesNo2("Syscall is very old or not detected\n\nDo you want to REBOOT the PS3?\n\n(Select NO to exit to XMB)") == YES)
@@ -4757,8 +4793,35 @@ s32 main(s32 argc, const char* argv[])
          else
              exit_to_xmb();
     }
-
-
+*/
+/*
+    if(use_sc35 && !file_exists((char*)"/dev_usb000") && !file_exists((char*)"/dev_hdd1"))
+	{
+		if(file_exists((char*)"/dev_usb001"))
+		{
+			sys_fs_mount("CELL_FS_UTILITY:HDD1", "CELL_FS_FAT", "/dev_usb000", 1);
+			{lv2syscall2(35, (u64)(char*)"/dev_usb000", (u64)(char*)"/dev_usb001");}
+		}
+		else
+		if(file_exists((char*)"/dev_usb002"))
+		{
+			sys_fs_mount("CELL_FS_UTILITY:HDD1", "CELL_FS_FAT", "/dev_usb000", 1);
+			{lv2syscall2(35, (u64)(char*)"/dev_usb000", (u64)(char*)"/dev_usb002");}
+		}
+		else
+		if(file_exists((char*)"/dev_usb003"))
+		{
+			sys_fs_mount("CELL_FS_UTILITY:HDD1", "CELL_FS_FAT", "/dev_usb000", 1);
+			{lv2syscall2(35, (u64)(char*)"/dev_usb000", (u64)(char*)"/dev_usb003");}
+		}
+		else
+		if(file_exists((char*)"/dev_usb006"))
+		{
+			sys_fs_mount("CELL_FS_UTILITY:HDD1", "CELL_FS_FAT", "/dev_usb000", 1);
+			{lv2syscall2(35, (u64)(char*)"/dev_usb000", (u64)(char*)"/dev_usb006");}
+		}
+	}
+*/
     if(!use_mamba)
     {
         if(must_patch) sys8_pokeinstr(0x80000000007EF220ULL, 0x0ULL);
@@ -5035,7 +5098,7 @@ s32 main(s32 argc, const char* argv[])
 
         unpatch_bdvdemu();
 
-        if(noBDVD && !use_cobra)
+        if(noBDVD && !use_cobra /*&& !use_sc35*/)
         {
             //sys_fs_umount("/dev_ps2disc");
             sys_fs_umount("/dev_bdvd");
@@ -5457,7 +5520,14 @@ s32 main(s32 argc, const char* argv[])
                 strcpy(filename, "/dev_hdd0");
             else if(find_device == BDVD_DEVICE)
                 strcpy(filename, "/dev_bdvd");
-            else
+/*
+            else if(use_sc35)
+            {
+                if(find_device > 1) continue;
+                sprintf(filename, "/dev_usb000");
+            }
+*/
+			else
                 sprintf(filename, "/dev_usb00%c", 47 + find_device);
 
 
@@ -8725,13 +8795,13 @@ autolaunch_proc:
                     launch_ps2classic(directories[currentgamedir].path_name, directories[currentgamedir].title);
                     return r;
                 }
-
-                if(unsupported_cfw)
+/*
+                if(!use_sc35 && unsupported_cfw)
                 {
                     DrawDialogOKTimer("ERROR: This function is not supported in this CFW", 3000.0f);
                     return r;
                 }
-
+*/
                 if((use_cobra || use_mamba) && strstr(directories[currentgamedir].path_name, "/dev_usb")!=NULL) reset_usb_ports(directories[currentgamedir].path_name);
 
                 if((directories[currentgamedir].flags & (PSP_FLAG | RETRO_FLAG | PS2_CLASSIC_FLAG)) == (PSP_FLAG | RETRO_FLAG | PS2_CLASSIC_FLAG) || (directories[currentgamedir].flags & D_FLAG_HOMEB)) ;
@@ -8975,10 +9045,36 @@ autolaunch_proc:
                 }
 
                 sprintf(tmp_path, "%s/PS3_GAME", directories[currentgamedir].path_name);
-                if((use_cobra || use_mamba) && (!(global_bd_mirror | game_cfg.bdemu | game_cfg.bdemu_ext)) && file_exists(tmp_path))
+                if(use_sc35 || ((use_cobra || use_mamba) && (!(global_bd_mirror | game_cfg.bdemu | game_cfg.bdemu_ext)) && file_exists(tmp_path)))
                 {   // mount ps3 game as /dev_bdvd & /app_home
-                    sys8_disable(0ULL);
-                    wm_cobra_map_game((char*)directories[currentgamedir].path_name, (char*)directories[currentgamedir].title_id);
+/*                    if(use_sc35)
+                    {
+//                       sprintf(tmp_path, "%s/PS3_GAME/LICDIR/LIC.DAT", directories[currentgamedir].path_name);
+//                       if(file_exists(tmp_path))
+//                       {
+//                           {lv2syscall2(35, (u64)(char*)"/dev_bdvd/PS3_GAME/LICDIR/LIC.DAT", (u64)(char*)"/dev_bdvd/PS3_GAME/LICDIR/LIC.BAK");}
+//                           {lv2syscall2(35, (u64)(char*)"/app_home/PS3_GAME/LICDIR/LIC.DAT", (u64)(char*)"/dev_bdvd/PS3_GAME/LICDIR/LIC.BAK");}
+//                           {lv2syscall2(35, (u64)(char*)"/app_home/USRDIR/LICDIR/LIC.DAT", (u64)(char*)"/dev_bdvd/PS3_GAME/LICDIR/LIC.BAK");}
+//                       }
+//                      sprintf(tmp_path, "%s/PS3_GAME", directories[currentgamedir].path_name);
+//                      {lv2syscall2(35, (u64)(char*)"/app_home/PS3_GAME", (u64)(char*)tmp_path);}
+
+//                      sprintf(tmp_path, "%s/PS3_GAME/USRDIR", directories[currentgamedir].path_name);
+//                      {lv2syscall2(35, (u64)(char*)"/app_home/USRDIR", (u64)(char*)tmp_path);}
+
+//                      sprintf(tmp_path, "%s/PS3_GAME/USRDIR/", directories[currentgamedir].path_name);
+//                      {lv2syscall2(35, (u64)(char*)"/app_home/", (u64)(char*)tmp_path);}
+
+                        {lv2syscall2(35, (u64)(char*)"/app_home", (u64)(char*)directories[currentgamedir].path_name);}
+                        {lv2syscall2(35, (u64)(char*)"/dev_bdvd", (u64)(char*)directories[currentgamedir].path_name);}
+                        {lv2syscall2(35, (u64)(char*)"//dev_bdvd", (u64)(char*)directories[currentgamedir].path_name);}
+                    }
+                    else
+*/
+                    {
+                        sys8_disable(0ULL);
+                        wm_cobra_map_game((char*)directories[currentgamedir].path_name, (char*)directories[currentgamedir].title_id);
+                    }
                     goto exit_mount;
                 }
 

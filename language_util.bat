@@ -13,5 +13,6 @@ copy LANGUAGES\PORTUGUESE\language.ini datas\language_ini_por.bin
 copy LANGUAGES\SPANISH\language.ini datas\language_ini_sp.bin
 copy LANGUAGES\KOREAN\language.ini datas\language_ini_kr.bin
 copy LANGUAGES\DANISH\language.ini datas\language_ini_da.bin
+copy LANGUAGES\POLISH\language.ini datas\language_ini_pl.bin
 
 pause
